@@ -23,7 +23,7 @@ interface PublicProfileData {
 async function fetchPublicProfile(
   username: string
 ): Promise<PublicProfileData | null> {
-  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.NEXTAUTH_URL || "http://localhost:3000";
 
   try {
     const res = await fetch(`${baseUrl}/api/public/${username}`, {
@@ -49,7 +49,7 @@ export async function generateMetadata({
   const { username } = params;
   const profile = await fetchPublicProfile(username);
 
-  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.NEXTAUTH_URL || "http://localhost:3000";
   const profileUrl = `${baseUrl}/u/${username}`;
 
   if (!profile) {
