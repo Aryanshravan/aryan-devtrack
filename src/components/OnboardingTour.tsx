@@ -67,10 +67,11 @@ export default function OnboardingTour({ onComplete }: OnboardingTourProps) {
 
   // auto-start on mount
   useEffect(() => {
-    // small delay so dashboard widgets have time to render first
-    const timer = setTimeout(startTour, 800);
-    return () => clearTimeout(timer);
-  }, [startTour]);
+  // skip tour in test environments to avoid blocking E2E tests
+  if (typeof window !== "undefined" && window.navigator.webdriver) return;
+  const timer = setTimeout(startTour, 800);
+  return () => clearTimeout(timer);
+}, [startTour]);
 
   return null;
 }
