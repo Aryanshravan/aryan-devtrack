@@ -1,8 +1,9 @@
-import { calculateStreak } from "@/lib/streak";
+import { calculateStreakFromDates } from "@/lib/streak";
 import type { GitHubAchievement } from "@/lib/github-achievements";
 import { syncGitHubAchievementsForUser } from "@/lib/github-achievements";
 import { fetchPinnedRepoDetails, type PinnedRepoDetails } from "@/lib/pinned-repos";
-import { getUserByUsername } from "@/lib/supabase";
+import { getUserByUsername, supabaseAdmin } from "@/lib/supabase";
+import { resolveServerGitHubToken } from "@/lib/github-app";
 
 const GITHUB_API = "https://api.github.com";
 
@@ -31,6 +32,12 @@ export interface StreakData {
   totalActiveDays: number;
 }
 
+export interface WeeklyGoalProgress {
+  completed: number;
+  total: number;
+  percentage: number;
+}
+
 export interface PublicProfileData {
   username: string;
   bio: string | null;
@@ -44,6 +51,8 @@ export interface PublicProfileData {
   achievements: GitHubAchievement[];
   achievementsError?: string | null;
   spotlightRepos?: PinnedRepoDetails[];
+  contributionMilestones?: { label: string; achievedAt: string | null }[];
+  weeklyGoalProgress: WeeklyGoalProgress | null;
 }
 
 async function ghFetch(url: string, token?: string): Promise<Response> {
@@ -134,7 +143,7 @@ export async function fetchPublicStreak(
   token?: string
 ): Promise<StreakData> {
   const since = new Date();
-  since.setDate(since.getDate() - 90);
+  since.setDate(since.getDate() - 365);
   const sinceStr = since.toISOString().slice(0, 10);
 
   const res = await ghFetch(
@@ -148,25 +157,17 @@ export async function fetchPublicStreak(
     items: Array<{ commit: { author: { date: string } } }>;
   };
 
-  const daySet: Record<string, true> = {};
+  const activeDates = new Set<string>();
   for (const item of data.items) {
-    daySet[item.commit.author.date.slice(0, 10)] = true;
+    activeDates.add(item.commit.author.date.slice(0, 10));
   }
-  const commitDays = Object.keys(daySet).sort();
 
-  if (commitDays.length === 0) {
-    return { current: 0, longest: 0, lastCommitDate: null, totalActiveDays: 0 };
-  }
-  const { currentStreak, longestStreak } = calculateStreak(
-    commitDays.map((day) => new Date(day))
-  );
-  const lastDay = commitDays[commitDays.length - 1];
-
+  const result = calculateStreakFromDates(activeDates);
   return {
-    current: currentStreak,
-    longest: longestStreak,
-    lastCommitDate: lastDay,
-    totalActiveDays: commitDays.length,
+    current: result.current,
+    longest: result.longest,
+    lastCommitDate: result.lastCommitDate,
+    totalActiveDays: result.totalActiveDays,
   };
 }
 
@@ -254,6 +255,33 @@ export async function fetchPublicPullRequests(
   return data.total_count ?? 0;
 }
 
+async function fetchPublicWeeklyGoalProgress(
+  userId: string,
+  showOnProfile: boolean
+): Promise<WeeklyGoalProgress | null> {
+  if (!showOnProfile) return null;
+
+  try {
+    const { data: goals, error } = await supabaseAdmin
+      .from("goals")
+      .select("current, target")
+      .eq("user_id", userId)
+      .eq("recurrence", "weekly");
+
+    if (error || !goals) return null;
+
+    const total = goals.length;
+    if (total === 0) return null;
+
+    const completed = goals.filter((g) => g.current >= g.target).length;
+    const percentage = Math.round((completed / total) * 100);
+
+    return { completed, total, percentage };
+  } catch {
+    return null;
+  }
+}
+
 export async function fetchPublicProfile(
   username: string,
   options: { includeAchievements?: boolean } = {}
@@ -261,7 +289,9 @@ export async function fetchPublicProfile(
   const user = await getUserByUsername(username);
   if (!user) return null;
 
-  const githubToken = process.env.GITHUB_TOKEN;
+  // Prefer a GitHub App installation token (5 000 req/hr per installation)
+  // over a plain PAT, then fall back to unauthenticated (60 req/hr per IP).
+  const githubToken = await resolveServerGitHubToken();
   const [
     publicGists,
     repos,
@@ -271,6 +301,7 @@ export async function fetchPublicProfile(
     pullRequests,
     achievementsCache,
     spotlight,
+    weeklyGoalProgress,
   ] = await Promise.all([
     fetchPublicGists(user.github_login, githubToken),
     fetchPublicTopRepos(user.github_login, githubToken, 30),
@@ -290,7 +321,16 @@ export async function fetchPublicProfile(
       user.pinned_repos || [],
       githubToken || ""
     ),
+    fetchPublicWeeklyGoalProgress(user.id, user.show_weekly_goals ?? false),
   ]);
+
+  // Fetch streak milestones for contribution highlights on public profile
+  const { data: streakMilestones } = await supabaseAdmin
+    .from("streak_milestones")
+    .select("streak_count, achieved_at")
+    .eq("user_id", user.id)
+    .order("streak_count", { ascending: false })
+    .limit(5);
 
   return {
     username: user.github_login,
@@ -305,5 +345,10 @@ export async function fetchPublicProfile(
     achievements: achievementsCache.achievements,
     achievementsError: achievementsCache.error,
     spotlightRepos: spotlight,
+    contributionMilestones: (streakMilestones ?? []).map((m) => ({
+      label: `${m.streak_count}-Day Streak`,
+      achievedAt: m.achieved_at ?? null,
+    })),
+    weeklyGoalProgress,
   };
 }
