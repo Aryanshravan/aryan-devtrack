@@ -644,12 +644,7 @@ function HeroSection() {
           </div>
           {/* Bento Content */}
           <div style={{ padding: 20 }}>
-          <div
-  style={{
-    width: '100%',
-    maxWidth: 380,
-  }}
-><BentoGrid /></div>
+            <BentoGrid />
           </div>
         </div>
       </div>
