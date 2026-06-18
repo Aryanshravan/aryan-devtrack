@@ -162,21 +162,13 @@ export default function Footer() {
             >
               Product
             </h3>
-            <div className="mt-6 flex flex-col gap-4 text-[14px] text-[var(--muted-foreground)]">
-              <a className="transition-all duration-200 hover:text-[var(--foreground)] hover:translate-x-1 w-fit" href="/">
-             Home
-            </a>
-              <a className="transition-all duration-200 hover:text-[var(--foreground)] hover:translate-x-1 w-fit" href="/dashboard">
-              Dashboard
-            </a>
-            
-              <Link className="transition-all duration-200 hover:text-[var(--foreground)] hover:translate-x-1 w-fit" href="/leaderboard">
-                Leaderboard
-              </Link>
-              <Link className="transition-all duration-200 hover:text-[var(--foreground)] hover:translate-x-1 w-fit" href="/contact">
-                Contact
-              </Link>
-            </div>
+            <nav aria-label="Product links" className="mt-6 flex flex-col gap-3">
+              {PRODUCT_LINKS.map(({ label, href }) => (
+                <FooterLink key={label} href={href}>
+                  {label}
+                </FooterLink>
+              ))}
+            </nav>
           </div>
 
           {/* Community links */}
