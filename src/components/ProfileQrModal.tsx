@@ -158,7 +158,7 @@ export function ProfileQrModal({
           ref={qrContainerRef}
           className="rounded-xl bg-white p-4 shadow-inner"
         >
-          <QRCode
+          <QRCodeCanvas
             value={profileUrl}
             size={200}
             level="H"
