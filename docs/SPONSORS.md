@@ -59,6 +59,6 @@ DevTrack is one of the most active open-source developer-productivity projects c
 
 For custom sponsorship arrangements or co-marketing questions:
 
-- Email: priyanshu.coder.dev@gmail.com
+- Email: doshipriyanshu3@gmail.com
 - GitHub: https://github.com/Umbrella-io/devtrack
 - Discussions: https://github.com/Umbrella-io/devtrack/discussions

@@ -507,7 +507,7 @@ Have questions, ideas, or want to connect with other contributors?
 
 - **[GitHub Discussions](https://github.com/Umbrella-io/devtrack/discussions)** — ask questions, share ideas, show what you've built
 - **[Open an Issue](https://github.com/Umbrella-io/devtrack/issues/new/choose)** — bug reports, feature requests, and good-first-issues
-- **[Email the maintainer](mailto:priyanshu.coder.dev@gmail.com)** — for anything else
+- **[Email the maintainer](mailto:doshipriyanshu3@gmail.com)** — for anything else
 
 All contributors are expected to follow the [Code of Conduct](./CODE_OF_CONDUCT.md).
 
