@@ -293,6 +293,7 @@ async function injectMockSession(page: import("@playwright/test").Page) {
     "**/api/user/pinned-repos/details**",
     "**/api/metrics/repo-explorer**",
     "**/api/daily-note**",
+    "**/api/metrics/achievement-progress**",
   ];
   for (const pattern of stubRoutes) {
     await page.route(pattern, (route) =>
@@ -365,7 +366,7 @@ test("[Dashboard E2E] no uncaught console errors on dashboard load", async ({
       !e.includes("favicon") &&
       !e.includes("net::ERR_") &&
       !e.includes("ERR_INTERNET_DISCONNECTED") &&
-      !e.includes("vercel-scripts.com") &&
+      !e.includes("vercel-scripts.com") && // lgtm[js/incomplete-url-substring-sanitization] - filtering test console noise, not sanitizing user input
       !e.includes("Content Security Policy") &&
       !e.includes("Hydration failed") &&
       !e.includes("Expected server HTML") &&
