@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase";
-import { dateDiffDays, toDateStr } from "@/lib/dateUtils";
+import { dateDiffDays, toDateStr } from "@/lib/date-utils";
 import {
   cacheGet,
   cacheSet,
