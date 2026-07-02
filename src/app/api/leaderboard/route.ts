@@ -17,6 +17,17 @@ import {
   upstashRateLimitFixedWindow,
   upstashTryAcquireLock,
 } from "@/lib/upstash-rest";
+import {
+  applyLeaderboardQuery,
+  buildLeaderboardCacheKey,
+  getRangeStartDate,
+  parseLeaderboardQueryFromSearchParams,
+  type LeaderboardEntry,
+  type LeaderboardMetric,
+  type LeaderboardPagination,
+  type LeaderboardQuery,
+  type Scope,
+} from "@/lib/leaderboard-query";
 
 export const dynamic = "force-dynamic";
 
@@ -70,30 +81,26 @@ function validateUserConcurrency(value: string | undefined): number {
 
 const USER_CONCURRENCY = validateUserConcurrency(process.env.LEADERBOARD_USER_CONCURRENCY);
 
-const LEADERBOARD_CACHE_KEY = "leaderboard:v1";
 const LEADERBOARD_BUILD_LOCK_KEY = "leaderboard:build-lock:v1";
-
-type LeaderboardMetric = "streak" | "commits" | "prs";
 
 interface PublicUser {
   id: string;
   github_login: string;
 }
 
-interface LeaderboardEntry {
-  rank: number;
-  username: string;
-  avatarUrl: string;
-  profileUrl: string;
-  streak: number;
-  commits: number;
-  prs: number;
-  score: number;
-}
-
-interface LeaderboardPayload {
+interface LeaderboardCachePayload {
   generatedAt: string;
   refreshSeconds: number;
+  query: {
+    range: LeaderboardQuery["range"];
+    scope: Scope;
+  };
+  rows: LeaderboardEntry[];
+}
+
+interface LeaderboardPayload extends LeaderboardCachePayload {
+  items: LeaderboardEntry[];
+  pagination: LeaderboardPagination;
   leaders: Record<LeaderboardMetric, LeaderboardEntry[]>;
 }
 
@@ -105,7 +112,10 @@ function getRateLimitKey(req: NextRequest): string {
   );
 }
 
-let memoryLeaderboardCache: LeaderboardCacheEntry<LeaderboardPayload> | null = null;
+const memoryLeaderboardCache = new Map<
+  string,
+  LeaderboardCacheEntry<LeaderboardCachePayload>
+>();
 const memoryRateLimits = new Map<string, RateLimitEntry>();
 
 function checkMemoryRateLimit(ip: string): { allowed: boolean; retryAfter?: number } {
@@ -140,7 +150,7 @@ async function checkRateLimit(
   return checkMemoryRateLimit(ip);
 }
 
-function isFresh(payload: LeaderboardPayload): boolean {
+function isFresh(payload: LeaderboardCachePayload): boolean {
   const generatedAt = Date.parse(payload.generatedAt);
   if (!Number.isFinite(generatedAt)) {
     return false;
@@ -248,7 +258,38 @@ async function fetchPrCount(username: string, since: string): Promise<number> {
   return data?.total_count ?? 0;
 }
 
-async function buildLeaderboard(): Promise<LeaderboardPayload> {
+function buildLeadersByMetric(rows: LeaderboardEntry[]): Record<LeaderboardMetric, LeaderboardEntry[]> {
+  const rankBy = (metric: LeaderboardMetric) =>
+    [...rows]
+      .sort((a, b) => b[metric] - a[metric] || b.score - a.score)
+      .slice(0, 50)
+      .map((entry, index) => ({ ...entry, rank: index + 1 }));
+
+  return {
+    streak: rankBy("streak"),
+    commits: rankBy("commits"),
+    prs: rankBy("prs"),
+  };
+}
+
+function formatLeaderboardResponse(
+  cached: LeaderboardCachePayload,
+  query: LeaderboardQuery
+): LeaderboardPayload {
+  const { items, pagination } = applyLeaderboardQuery(cached.rows, query);
+
+  return {
+    generatedAt: cached.generatedAt,
+    refreshSeconds: cached.refreshSeconds,
+    query: cached.query,
+    rows: cached.rows,
+    items,
+    pagination,
+    leaders: buildLeadersByMetric(cached.rows),
+  };
+}
+
+async function buildLeaderboard(query: LeaderboardQuery): Promise<LeaderboardCachePayload> {
   const { data: users, error } = await supabaseAdmin
     .from("users")
     .select("id, github_login")
@@ -262,8 +303,10 @@ async function buildLeaderboard(): Promise<LeaderboardPayload> {
   }
 
   const now = new Date();
-  const monthStart = toDateStr(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)));
-  const streakStart = toDateStr(new Date(Date.now() - 90 * 86400000));
+  const rangeStart = getRangeStartDate(query.range, now);
+
+  // Scope is currently reserved for repository/organization-level ranking support.
+  const appliedScope: Scope = query.scope;
 
   const safeUsers = (users ?? []) as PublicUser[];
 
@@ -272,9 +315,9 @@ async function buildLeaderboard(): Promise<LeaderboardPayload> {
     USER_CONCURRENCY,
     async (user) => {
       const [monthlyCommits, streakCommits, prs] = await Promise.all([
-        fetchCommitStats(user.github_login, monthStart),
-        fetchCommitStats(user.github_login, streakStart),
-        fetchPrCount(user.github_login, monthStart),
+        fetchCommitStats(user.github_login, rangeStart),
+        fetchCommitStats(user.github_login, rangeStart),
+        fetchPrCount(user.github_login, rangeStart),
       ]);
 
       const streak = calculateCurrentStreak(
@@ -296,24 +339,26 @@ async function buildLeaderboard(): Promise<LeaderboardPayload> {
     }
   );
 
-  const rankBy = (metric: LeaderboardMetric) =>
-    [...rows]
-      .sort((a, b) => b[metric] - a[metric] || b.score - a.score)
-      .slice(0, 50)
-      .map((entry, index) => ({ ...entry, rank: index + 1 }));
+  const sortedByScore = [...rows].sort(
+    (a, b) => b.score - a.score || b.commits - a.commits || b.streak - a.streak
+  );
 
   return {
     generatedAt: now.toISOString(),
     refreshSeconds: CACHE_REFRESH_SECONDS,
-    leaders: {
-      streak: rankBy("streak"),
-      commits: rankBy("commits"),
-      prs: rankBy("prs"),
+    query: {
+      range: query.range,
+      scope: appliedScope,
     },
+    rows: sortedByScore.map((entry) => ({ ...entry, rank: 0 })),
   };
 }
 
 export async function GET(req: NextRequest) {
+  const query = parseLeaderboardQueryFromSearchParams(req.nextUrl.searchParams);
+  const cacheKey = buildLeaderboardCacheKey(query);
+  const lockKey = `${LEADERBOARD_BUILD_LOCK_KEY}:${query.range}:${query.scope}`;
+
   const ip = getRateLimitKey(req);
   const rateLimit = await checkRateLimit(ip);
 
@@ -326,32 +371,38 @@ export async function GET(req: NextRequest) {
 
   const bypass = isMetricsCacheBypassed(req);
   if (!bypass) {
-    memoryLeaderboardCache = pruneExpiredLeaderboardCache(memoryLeaderboardCache);
-    if (memoryLeaderboardCache && isFresh(memoryLeaderboardCache.payload)) {
-      return NextResponse.json(memoryLeaderboardCache.payload, {
+    const memoryEntry = pruneExpiredLeaderboardCache(memoryLeaderboardCache.get(cacheKey) ?? null);
+    if (memoryEntry) {
+      memoryLeaderboardCache.set(cacheKey, memoryEntry);
+    } else {
+      memoryLeaderboardCache.delete(cacheKey);
+    }
+
+    if (memoryEntry && isFresh(memoryEntry.payload)) {
+      return NextResponse.json(formatLeaderboardResponse(memoryEntry.payload, query), {
         headers: { "x-devtrack-leaderboard-cache": "memory" },
       });
     }
 
-    const cached = await cacheGet<LeaderboardPayload>(LEADERBOARD_CACHE_KEY);
+    const cached = await cacheGet<LeaderboardCachePayload>(cacheKey);
     if (cached && isFresh(cached)) {
-      memoryLeaderboardCache = {
+      memoryLeaderboardCache.set(cacheKey, {
         payload: cached,
         expiresAt: Date.now() + CACHE_REFRESH_SECONDS * 1000,
-      };
-      return NextResponse.json(cached);
+      });
+      return NextResponse.json(formatLeaderboardResponse(cached, query));
     }
 
     // Avoid thundering herd on cache misses across serverless instances.
     if (getUpstashConfig()) {
       const locked = await upstashTryAcquireLock({
-        key: LEADERBOARD_BUILD_LOCK_KEY,
+        key: lockKey,
         ttlSeconds: 5 * 60,
       });
 
       if (!locked) {
         if (cached) {
-          return NextResponse.json(cached, {
+          return NextResponse.json(formatLeaderboardResponse(cached, query), {
             headers: { "x-devtrack-leaderboard-cache": "stale" },
           });
         }
@@ -364,17 +415,17 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const payload = await buildLeaderboard();
-    await cacheSet(LEADERBOARD_CACHE_KEY, payload, CACHE_STALE_SECONDS);
-    memoryLeaderboardCache = {
+    const payload = await buildLeaderboard(query);
+    await cacheSet(cacheKey, payload, CACHE_STALE_SECONDS);
+    memoryLeaderboardCache.set(cacheKey, {
       payload,
       expiresAt: Date.now() + CACHE_REFRESH_SECONDS * 1000,
-    };
-    return NextResponse.json(payload);
+    });
+    return NextResponse.json(formatLeaderboardResponse(payload, query));
   } catch {
-    const cached = await cacheGet<LeaderboardPayload>(LEADERBOARD_CACHE_KEY);
+    const cached = await cacheGet<LeaderboardCachePayload>(cacheKey);
     if (cached) {
-      return NextResponse.json(cached, {
+      return NextResponse.json(formatLeaderboardResponse(cached, query), {
         headers: { "x-devtrack-leaderboard-cache": "error-stale" },
       });
     }
